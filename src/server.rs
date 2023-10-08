@@ -19,7 +19,7 @@ use crate::common::{Message, MessageQueue};
 
 #[derive(Clone)]
 pub struct ServerOpts {
-    pub addr: &'static str,
+    pub addr: String,
     pub on_connect: fn(SocketAddr),
     pub on_disconnect: fn(SocketAddr),
 }
@@ -27,7 +27,7 @@ pub struct ServerOpts {
 impl Default for ServerOpts {
     fn default() -> Self {
         Self {
-            addr: "127.0.0.1:7000",
+            addr: "127.0.0.1:7000".to_owned(),
             on_connect: |_| {},
             on_disconnect: |_| {},
         }
@@ -66,6 +66,10 @@ impl Server {
         self.write_tx.send(msg)?;
         Ok(())
     }
+
+    pub fn opts(&self) -> &ServerOpts {
+        &self.opts
+    }
 }
 
 struct ServerWorker {
@@ -75,7 +79,7 @@ struct ServerWorker {
 
 impl ServerWorker {
     async fn run(&self, write_rx: mpsc::UnboundedReceiver<Message>) {
-        let ln = TcpListener::bind(self.opts.addr).await.unwrap();
+        let ln = TcpListener::bind(&self.opts.addr).await.unwrap();
 
         let writers: WritersMap = Arc::new(Mutex::new(HashMap::new()));
         let mut writer = WriterWorker {
