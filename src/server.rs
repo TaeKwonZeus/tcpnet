@@ -1,12 +1,13 @@
-use bytes::BytesMut;
+use bytes::{Bytes, BytesMut};
 use std::{
     collections::HashMap,
+    error::Error,
     io::{self, ErrorKind},
     net::SocketAddr,
     sync::Arc,
 };
 use tokio::{
-    io::AsyncReadExt,
+    io::{AsyncReadExt, AsyncWriteExt},
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener,
@@ -46,10 +47,9 @@ impl Server {
 
         let worker = ServerWorker {
             opts: opts.clone(),
-            write_rx,
             queue: queue.clone(),
         };
-        tokio::spawn(async move { worker.run().await });
+        tokio::spawn(async move { worker.run(write_rx).await });
 
         Self {
             opts,
@@ -61,20 +61,28 @@ impl Server {
     pub async fn received(&mut self) -> Vec<Message> {
         self.queue.flush().await
     }
+
+    pub async fn write(&self, msg: Message) -> Result<(), Box<dyn Error>> {
+        self.write_tx.send(msg)?;
+        Ok(())
+    }
 }
 
 struct ServerWorker {
     opts: ServerOpts,
-    write_rx: mpsc::UnboundedReceiver<Message>,
     queue: MessageQueue,
 }
 
 impl ServerWorker {
-    async fn run(&self) {
+    async fn run(&self, write_rx: mpsc::UnboundedReceiver<Message>) {
         let ln = TcpListener::bind(self.opts.addr).await.unwrap();
 
-        let writers: Arc<Mutex<HashMap<SocketAddr, OwnedWriteHalf>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let writers: WritersMap = Arc::new(Mutex::new(HashMap::new()));
+        let mut writer = WriterWorker {
+            writers: writers.clone(),
+            rx: write_rx,
+        };
+        tokio::spawn(async move { writer.run().await.unwrap() });
 
         while let Ok((conn, addr)) = ln.accept().await {
             let (read_half, write_half) = conn.into_split();
@@ -136,5 +144,34 @@ impl ListenerWorker {
                 })
                 .await;
         }
+    }
+}
+
+type WritersMap = Arc<Mutex<HashMap<SocketAddr, OwnedWriteHalf>>>;
+
+struct WriterWorker {
+    writers: WritersMap,
+    rx: mpsc::UnboundedReceiver<Message>,
+}
+
+impl WriterWorker {
+    async fn run(&mut self) -> io::Result<()> {
+        while let Some(mut msg) = self.rx.recv().await {
+            if let Some(writer) = self.writers.lock().await.get_mut(&msg.addr) {
+                if let Err(e) = Self::write_data(writer, &mut msg.data).await {
+                    eprintln!("Error while writing: {}", e);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn write_data(writer: &mut OwnedWriteHalf, buf: &mut Bytes) -> io::Result<()> {
+        writer
+            .write_all(&u32::to_le_bytes(buf.len() as u32))
+            .await?;
+
+        writer.write_all_buf(buf).await
     }
 }
