@@ -1,13 +1,13 @@
 use std::{error::Error, io::ErrorKind};
 
 use tokio::{
-    io::{self, AsyncReadExt, AsyncWriteExt},
+    io::{self, AsyncReadExt},
     net::{tcp::OwnedWriteHalf, TcpStream},
     sync::mpsc,
     task::JoinHandle,
 };
 
-use crate::common::{MessageQueue, write_data};
+use crate::common::{write_data, MessageQueue};
 
 #[derive(Clone)]
 pub struct ClientOpts {

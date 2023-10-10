@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::AsyncReadExt,
     net::{
         tcp::{OwnedReadHalf, OwnedWriteHalf},
         TcpListener,
@@ -15,7 +15,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::common::{MessageQueue, write_data};
+use crate::common::{write_data, MessageQueue};
 
 #[derive(Clone)]
 pub struct ServerOpts {
