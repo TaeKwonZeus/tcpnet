@@ -1,11 +1,11 @@
-use std::{net::SocketAddr, sync::Arc};
-
-use bytes::Bytes;
-use tokio::sync::Mutex;
+use std::{
+    net::SocketAddr,
+    sync::{Arc, Mutex},
+};
 
 pub struct Message {
     pub addr: SocketAddr,
-    pub data: Bytes,
+    pub data: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -13,6 +13,7 @@ pub struct MessageQueue {
     queue: Arc<Mutex<Vec<Message>>>,
 }
 
+#[allow(dead_code)]
 impl MessageQueue {
     pub fn new() -> Self {
         MessageQueue {
@@ -20,21 +21,25 @@ impl MessageQueue {
         }
     }
 
-    pub async fn push(&mut self, msg: Message) {
-        self.queue.lock().await.push(msg)
+    pub fn push(&mut self, msg: Message) {
+        self.queue.lock().unwrap().push(msg)
     }
 
-    pub async fn flush(&mut self) -> Vec<Message> {
-        let mut queue = self.queue.lock().await;
+    pub fn flush(&mut self) -> Vec<Message> {
+        if self.is_empty() {
+            return Vec::new();
+        }
+
+        let mut queue = self.queue.lock().unwrap();
         std::mem::take(&mut queue)
     }
 
-    pub async fn len(&self) -> usize {
-        self.queue.lock().await.len()
+    pub fn len(&self) -> usize {
+        self.queue.lock().unwrap().len()
     }
 
-    pub async fn is_empty(&self) -> bool {
-        self.queue.lock().await.is_empty()
+    pub fn is_empty(&self) -> bool {
+        self.queue.lock().unwrap().is_empty()
     }
 }
 

@@ -1,4 +1,3 @@
-use bytes::{Bytes, BytesMut};
 use std::{
     collections::HashMap,
     error::Error,
@@ -13,6 +12,7 @@ use tokio::{
         TcpListener,
     },
     sync::{mpsc, Mutex},
+    task::JoinHandle,
 };
 
 use crate::common::{Message, MessageQueue};
@@ -38,6 +38,7 @@ pub struct Server {
     opts: ServerOpts,
     write_tx: mpsc::UnboundedSender<Message>,
     queue: MessageQueue,
+    handle: Option<JoinHandle<()>>,
 }
 
 impl Server {
@@ -49,26 +50,34 @@ impl Server {
             opts: opts.clone(),
             queue: queue.clone(),
         };
-        tokio::spawn(async move { worker.run(write_rx).await });
+        let handle = tokio::spawn(async move { worker.run(write_rx).await });
 
         Self {
             opts,
             write_tx,
             queue,
+            handle: Some(handle),
         }
     }
 
-    pub async fn received(&mut self) -> Vec<Message> {
-        self.queue.flush().await
+    pub fn received(&mut self) -> Vec<Message> {
+        self.queue.flush()
     }
 
-    pub async fn write(&self, msg: Message) -> Result<(), Box<dyn Error>> {
+    pub fn write(&self, msg: Message) -> Result<(), Box<dyn Error>> {
         self.write_tx.send(msg)?;
         Ok(())
     }
 
     pub fn opts(&self) -> &ServerOpts {
         &self.opts
+    }
+
+    pub fn running(&self) -> bool {
+        match &self.handle {
+            None => false,
+            Some(h) => !h.is_finished(),
+        }
     }
 }
 
@@ -134,19 +143,17 @@ impl ListenerWorker {
             let len = u32::from_le_bytes(len_buf);
 
             // Get message with the length len
-            let mut buf = BytesMut::with_capacity(len as usize);
-            while buf.len() < buf.capacity() {
-                if self.reader.read_buf(&mut buf).await? == 0 {
-                    return Ok(());
-                };
+            let mut buf = vec![0u8; len as usize];
+            match self.reader.read_exact(&mut buf).await {
+                Ok(_) => {}
+                Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(()),
+                Err(e) => return Err(e),
             }
 
-            self.queue
-                .push(Message {
-                    addr: self.addr,
-                    data: buf.freeze(),
-                })
-                .await;
+            self.queue.push(Message {
+                addr: self.addr,
+                data: buf,
+            });
         }
     }
 }
@@ -171,11 +178,11 @@ impl WriterWorker {
         Ok(())
     }
 
-    async fn write_data(writer: &mut OwnedWriteHalf, buf: &mut Bytes) -> io::Result<()> {
+    async fn write_data(writer: &mut OwnedWriteHalf, buf: &mut Vec<u8>) -> io::Result<()> {
         writer
             .write_all(&u32::to_le_bytes(buf.len() as u32))
             .await?;
 
-        writer.write_all_buf(buf).await
+        writer.write_all(buf).await
     }
 }
