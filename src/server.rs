@@ -15,7 +15,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::common::{Message, MessageQueue};
+use crate::common::MessageQueue;
 
 #[derive(Clone)]
 pub struct ServerOpts {
@@ -34,17 +34,20 @@ impl Default for ServerOpts {
     }
 }
 
+type Message = (SocketAddr, Vec<u8>);
+type ServerQueue = MessageQueue<Message>;
+
 pub struct Server {
     opts: ServerOpts,
     write_tx: mpsc::UnboundedSender<Message>,
-    queue: MessageQueue,
-    handle: Option<JoinHandle<()>>,
+    queue: ServerQueue,
+    handle: JoinHandle<()>,
 }
 
 impl Server {
     pub fn new(opts: ServerOpts) -> Self {
         let (write_tx, write_rx) = mpsc::unbounded_channel();
-        let queue = MessageQueue::new();
+        let queue = ServerQueue::new();
 
         let worker = ServerWorker {
             opts: opts.clone(),
@@ -56,7 +59,7 @@ impl Server {
             opts,
             write_tx,
             queue,
-            handle: Some(handle),
+            handle,
         }
     }
 
@@ -64,7 +67,7 @@ impl Server {
         self.queue.flush()
     }
 
-    pub fn write(&self, msg: Message) -> Result<(), Box<dyn Error>> {
+    pub fn send(&self, msg: Message) -> Result<(), Box<dyn Error>> {
         self.write_tx.send(msg)?;
         Ok(())
     }
@@ -74,16 +77,13 @@ impl Server {
     }
 
     pub fn running(&self) -> bool {
-        match &self.handle {
-            None => false,
-            Some(h) => !h.is_finished(),
-        }
+        !self.handle.is_finished()
     }
 }
 
 struct ServerWorker {
     opts: ServerOpts,
-    queue: MessageQueue,
+    queue: ServerQueue,
 }
 
 impl ServerWorker {
@@ -97,6 +97,8 @@ impl ServerWorker {
         };
         tokio::spawn(async move { writer.run().await.unwrap() });
 
+        eprintln!("Listening at address {}", self.opts.addr);
+
         while let Ok((conn, addr)) = ln.accept().await {
             let (read_half, write_half) = conn.into_split();
 
@@ -106,6 +108,8 @@ impl ServerWorker {
                 reader: read_half,
                 queue: self.queue.clone(),
             };
+            let on_disconnect = self.opts.on_disconnect;
+
             tokio::spawn(async move {
                 // Nest scope so mutex gets unlocked before running listener
                 {
@@ -119,7 +123,10 @@ impl ServerWorker {
 
                 w.lock().await.remove(&addr);
                 eprintln!("Client at address {} disconnected", addr);
+                on_disconnect(addr);
             });
+
+            (self.opts.on_connect)(addr);
         }
     }
 }
@@ -127,7 +134,7 @@ impl ServerWorker {
 struct ListenerWorker {
     addr: SocketAddr,
     reader: OwnedReadHalf,
-    queue: MessageQueue,
+    queue: ServerQueue,
 }
 
 impl ListenerWorker {
@@ -144,16 +151,15 @@ impl ListenerWorker {
 
             // Get message with the length len
             let mut buf = vec![0u8; len as usize];
-            match self.reader.read_exact(&mut buf).await {
-                Ok(_) => {}
+            let n = match self.reader.read_exact(&mut buf).await {
+                Ok(n) => n,
                 Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(()),
                 Err(e) => return Err(e),
-            }
+            };
 
-            self.queue.push(Message {
-                addr: self.addr,
-                data: buf,
-            });
+            eprintln!("Received {} bytes from {}", n, self.addr);
+
+            self.queue.push((self.addr, buf));
         }
     }
 }
@@ -167,10 +173,11 @@ struct WriterWorker {
 
 impl WriterWorker {
     async fn run(&mut self) -> io::Result<()> {
-        while let Some(mut msg) = self.rx.recv().await {
-            if let Some(writer) = self.writers.lock().await.get_mut(&msg.addr) {
-                if let Err(e) = Self::write_data(writer, &mut msg.data).await {
-                    eprintln!("Error while writing: {}", e);
+        while let Some((addr, mut data)) = self.rx.recv().await {
+            if let Some(writer) = self.writers.lock().await.get_mut(&addr) {
+                match Self::write_data(writer, &mut data).await {
+                    Ok(_) => eprintln!("Wrote {} bytes to {}", data.len(), addr),
+                    Err(e) => eprintln!("Error while writing: {}", e),
                 }
             }
         }

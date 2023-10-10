@@ -1,31 +1,23 @@
-use std::{
-    net::SocketAddr,
-    sync::{Arc, Mutex},
-};
-
-pub struct Message {
-    pub addr: SocketAddr,
-    pub data: Vec<u8>,
-}
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
-pub struct MessageQueue {
-    queue: Arc<Mutex<Vec<Message>>>,
+pub struct MessageQueue<T> {
+    queue: Arc<Mutex<Vec<T>>>,
 }
 
 #[allow(dead_code)]
-impl MessageQueue {
+impl<T> MessageQueue<T> {
     pub fn new() -> Self {
         MessageQueue {
             queue: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
-    pub fn push(&mut self, msg: Message) {
+    pub fn push(&mut self, msg: T) {
         self.queue.lock().unwrap().push(msg)
     }
 
-    pub fn flush(&mut self) -> Vec<Message> {
+    pub fn flush(&mut self) -> Vec<T> {
         if self.is_empty() {
             return Vec::new();
         }
@@ -43,7 +35,7 @@ impl MessageQueue {
     }
 }
 
-impl Default for MessageQueue {
+impl<T> Default for MessageQueue<T> {
     fn default() -> Self {
         Self::new()
     }
