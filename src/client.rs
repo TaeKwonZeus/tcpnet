@@ -11,15 +11,15 @@ use crate::common::{write_data, MessageQueue};
 
 #[derive(Clone)]
 pub struct ClientOpts {
-    server_addr: String,
-    on_connect: fn(),
-    on_disconnect: fn(),
+    pub addr: String,
+    pub on_connect: fn(),
+    pub on_disconnect: fn(),
 }
 
 impl Default for ClientOpts {
     fn default() -> Self {
         Self {
-            server_addr: "127.0.0.1:7000".to_owned(),
+            addr: "127.0.0.1:7000".to_owned(),
             on_connect: || {},
             on_disconnect: || {},
         }
@@ -84,9 +84,7 @@ struct ClientWorker {
 
 impl ClientWorker {
     async fn run(&mut self, write_rx: mpsc::UnboundedReceiver<Message>) -> io::Result<()> {
-        let (mut read_half, write_half) = TcpStream::connect(&self.opts.server_addr)
-            .await?
-            .into_split();
+        let (mut read_half, write_half) = TcpStream::connect(&self.opts.addr).await?.into_split();
         (self.opts.on_connect)();
 
         let mut writer = WriterWorker {
