@@ -1,4 +1,7 @@
 use std::sync::{Arc, Mutex};
+use tokio::io;
+use tokio::io::AsyncWriteExt;
+use tokio::net::tcp::OwnedWriteHalf;
 
 #[derive(Clone)]
 pub struct MessageQueue<T> {
@@ -39,4 +42,12 @@ impl<T> Default for MessageQueue<T> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub async fn write_data(writer: &mut OwnedWriteHalf, buf: &mut Vec<u8>) -> io::Result<()> {
+    writer
+        .write_all(&u32::to_le_bytes(buf.len() as u32))
+        .await?;
+
+    writer.write_all(buf).await
 }

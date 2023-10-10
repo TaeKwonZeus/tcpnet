@@ -7,7 +7,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::common::MessageQueue;
+use crate::common::{MessageQueue, write_data};
 
 #[derive(Clone)]
 pub struct ClientOpts {
@@ -128,20 +128,12 @@ struct WriterWorker {
 impl WriterWorker {
     async fn run(&mut self) -> io::Result<()> {
         while let Some(mut msg) = self.rx.recv().await {
-            match Self::write_data(&mut self.writer, &mut msg).await {
+            match write_data(&mut self.writer, &mut msg).await {
                 Ok(_) => eprintln!("Wrote {} bytes to server", msg.len()),
                 Err(e) => eprintln!("Error while writing: {}", e),
             }
         }
 
         Ok(())
-    }
-
-    async fn write_data(writer: &mut OwnedWriteHalf, buf: &mut Vec<u8>) -> io::Result<()> {
-        writer
-            .write_all(&u32::to_le_bytes(buf.len() as u32))
-            .await?;
-
-        writer.write_all(buf).await
     }
 }
