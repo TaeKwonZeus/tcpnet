@@ -1,10 +1,3 @@
-# tcpnet
-
-A simple TCP-based message transport for games that runs on Tokio
-
-Server usage example:
-
-```rs
 use std::net::SocketAddr;
 use tcpnet::{Server, ServerOpts};
 
@@ -39,5 +32,3 @@ async fn main() {
         server.send((addr, "Hello!".as_bytes().to_vec())).unwrap();
     }
 }
-
-```
