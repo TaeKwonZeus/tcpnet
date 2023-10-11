@@ -26,7 +26,11 @@ async fn main() {
     // Call this on every tick
     for (addr, data) in server.received() {
         // Handle incoming requests
-        println!("{}, {:#?}", addr, data);
+        println!(
+            "{}: {}",
+            addr,
+            std::str::from_utf8(data.as_slice()).unwrap()
+        );
 
         // Sending messages to clients
         server.send((addr, "Hello!".as_bytes().to_vec())).unwrap();

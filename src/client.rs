@@ -49,6 +49,7 @@ impl Client {
         let handle = tokio::spawn(async move {
             worker.run(write_rx).await.unwrap();
             on_disconnect();
+            println!("Disconnected from server");
         });
 
         Self {
@@ -86,6 +87,7 @@ impl ClientWorker {
     async fn run(&mut self, write_rx: mpsc::UnboundedReceiver<Message>) -> io::Result<()> {
         let (mut read_half, write_half) = TcpStream::connect(&self.opts.addr).await?.into_split();
         (self.opts.on_connect)();
+        println!("Connected to server at address {}", self.opts.addr);
 
         let mut writer = WriterWorker {
             writer: write_half,

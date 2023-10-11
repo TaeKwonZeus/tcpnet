@@ -12,34 +12,31 @@ pub mod tests {
     use crate::*;
 
     #[tokio::test]
-    async fn test_server() {
+    async fn test() {
         let mut server = Server::new(ServerOpts::default());
         assert!(server.running());
 
-        let mut ticker = tokio::time::interval(Duration::from_millis(64));
-        loop {
-            ticker.tick().await;
-
-            for (addr, msg) in server.received() {
-                println!("{}: {}", addr, std::str::from_utf8(&msg).unwrap());
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn test_client() {
-        let client = Client::new(ClientOpts::default());
+        let mut client = Client::new(ClientOpts::default());
         assert!(client.connected());
 
-        client
-            .send("I hate this place".as_bytes().to_vec())
+        client.send("Hello!".as_bytes().to_vec()).unwrap();
+
+        // Wait 1 millisecond for TCP to transfer data
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        let recv = server.received();
+        assert_eq!(recv.len(), 1);
+        assert_eq!(recv[0].1, "Hello!".as_bytes().to_vec());
+
+        server
+            .send((recv[0].0, "Hello back!".as_bytes().to_vec()))
             .unwrap();
 
-        let mut ticker = tokio::time::interval(Duration::from_secs(5));
-        loop {
-            ticker.tick().await;
+        // Wait 1 millisecond for TCP to transfer data
+        tokio::time::sleep(Duration::from_millis(1)).await;
 
-            assert!(client.send("I hate this place".as_bytes().to_vec()).is_ok());
-        }
+        let recv = client.received();
+        assert_eq!(recv.len(), 1);
+        assert_eq!(recv[0], "Hello back!".as_bytes().to_vec());
     }
 }
