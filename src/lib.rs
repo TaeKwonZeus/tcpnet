@@ -22,12 +22,22 @@ pub mod tests {
         assert!(client.connected());
 
         client.send("Hello!".as_bytes().to_vec())?;
+        client.stop();
+
         std::thread::sleep(Duration::from_millis(1));
+
+        // Restart the client
+        client.start("127.0.0.1:7000");
+
+        // Wait for TCP
+        std::thread::sleep(Duration::from_millis(1));
+
+        // Process messages
         for msg in server.received()? {
             match msg {
-                Message::Connect(_) => {}
-                Message::Disconnect(_) => {}
-                Message::Data(_, data) => println!("{}", std::str::from_utf8(&data)?),
+                Message::Connect(addr) => println!("{} connected", addr),
+                Message::Disconnect(addr) => println!("{} disconnected", addr),
+                Message::Data(addr, data) => println!("{}: {}", addr, std::str::from_utf8(&data)?),
             }
         }
 
