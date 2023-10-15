@@ -28,9 +28,9 @@ impl fmt::Display for NotConnectedError {
 
 impl Error for NotConnectedError {}
 
-/// Represents messages received from the client. Notifies the consumer about incoming data or disconnecting.
+/// Represents events received from the client. Notifies the consumer about incoming data or disconnecting.
 #[derive(Clone)]
-pub enum Message {
+pub enum Event {
     Disconnect,
     Data(Vec<u8>),
 }
@@ -72,8 +72,8 @@ impl Client {
         }
     }
 
-    /// Gets the messages received from the server since the last `received()` call.
-    pub fn received(&mut self) -> Result<Vec<Message>, NotConnectedError> {
+    /// Gets the events received from the server since the last `received()` call.
+    pub fn received(&mut self) -> Result<Vec<Event>, NotConnectedError> {
         if self.connected() {
             self.rt
                 .block_on(async { self.handle.as_mut().unwrap().received() })
@@ -106,7 +106,7 @@ enum ClientMessage {
 }
 
 struct ClientHandle {
-    queue: MessageQueue<Message>,
+    queue: MessageQueue<Event>,
     tx: mpsc::UnboundedSender<ClientMessage>,
     handle: JoinHandle<()>,
 }
@@ -127,7 +127,7 @@ impl ClientHandle {
         Self { queue, tx, handle }
     }
 
-    fn received(&mut self) -> Result<Vec<Message>, NotConnectedError> {
+    fn received(&mut self) -> Result<Vec<Event>, NotConnectedError> {
         if self.connected() {
             Ok(self.queue.flush())
         } else {
@@ -156,7 +156,7 @@ impl Drop for ClientHandle {
 }
 
 struct ClientWorker {
-    queue: MessageQueue<Message>,
+    queue: MessageQueue<Event>,
     rx: mpsc::UnboundedReceiver<ClientMessage>,
 }
 
@@ -196,21 +196,26 @@ impl ClientWorker {
 
                 println!("Received {} bytes from server", n);
 
-                q.push(Message::Data(buf));
+                q.push(Event::Data(buf));
             }
             let _ = stop_tx.send(());
         });
 
         loop {
-            let _ = tokio::select! {
+            tokio::select! {
                 _ = &mut stop_rx => {
-                    self.queue.push(Message::Disconnect);
+                    self.queue.push(Event::Disconnect);
                     println!("Disconnected from server");
                     return;
                 },
                 Some(msg) = self.rx.recv() => {
                     match msg {
-                        ClientMessage::Write(mut data) => write_data(&mut write_half, &mut data).await,
+                        ClientMessage::Write(mut data) => {
+                            match write_data(&mut write_half, &mut data).await {
+                                Ok(_) => println!("Wrote {} bytes to server", data.len()),
+                                Err(e) => println!("Error while writing: {}", e),
+                            }
+                        },
                         ClientMessage::Stop => return
                     }
                 }

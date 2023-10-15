@@ -4,11 +4,11 @@ pub mod server;
 
 #[cfg(test)]
 pub mod tests {
-    use std::{error::Error, time::Duration};
+    use std::{error::Error, thread::sleep, time::Duration};
 
     use crate::{
-        client::Client,
-        server::{Message, Server},
+        client::{self, Client},
+        server::{self, Server},
     };
 
     #[test]
@@ -21,23 +21,29 @@ pub mod tests {
         client.start("127.0.0.1:7000");
         assert!(client.connected());
 
+        // Send data to server
         client.send("Hello!".as_bytes().to_vec())?;
-        client.stop();
-
-        std::thread::sleep(Duration::from_millis(1));
-
-        // Restart the client
-        client.start("127.0.0.1:7000");
 
         // Wait for TCP
-        std::thread::sleep(Duration::from_millis(1));
+        sleep(Duration::from_millis(1));
 
-        // Process messages
-        for msg in server.received()? {
-            match msg {
-                Message::Connect(addr) => println!("{} connected", addr),
-                Message::Disconnect(addr) => println!("{} disconnected", addr),
-                Message::Data(addr, data) => println!("{}: {}", addr, std::str::from_utf8(&data)?),
+        // Process events
+        for event in server.received()? {
+            match event {
+                server::Event::Connect(addr) => println!("{} connected", addr),
+                server::Event::Disconnect(addr) => println!("{} disconnected", addr),
+                server::Event::Data(addr, data) => {
+                    println!("{}: {}", addr, std::str::from_utf8(&data)?);
+                    server.send(addr, "Hello back!".as_bytes().to_vec())?;
+                }
+            }
+        }
+
+        sleep(Duration::from_millis(1));
+
+        for event in client.received()? {
+            if let client::Event::Data(data) = event {
+                println!("Received data from server: {}", std::str::from_utf8(&data)?);
             }
         }
 

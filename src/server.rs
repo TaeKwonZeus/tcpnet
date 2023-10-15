@@ -34,7 +34,7 @@ impl fmt::Display for NotRunningError {
 impl Error for NotRunningError {}
 
 #[derive(Clone)]
-pub enum Message {
+pub enum Event {
     Connect(SocketAddr),
     Disconnect(SocketAddr),
     Data(SocketAddr, Vec<u8>),
@@ -78,7 +78,7 @@ impl Server {
         }
     }
 
-    pub fn received(&mut self) -> Result<Vec<Message>, NotRunningError> {
+    pub fn received(&mut self) -> Result<Vec<Event>, NotRunningError> {
         if self.running() {
             self.rt
                 .block_on(async { self.handle.as_mut().unwrap().received() })
@@ -124,7 +124,7 @@ enum ServerMessage {
 
 struct ServerHandle {
     tx: mpsc::UnboundedSender<ServerMessage>,
-    queue: MessageQueue<Message>,
+    queue: MessageQueue<Event>,
     handle: JoinHandle<()>,
 }
 
@@ -143,7 +143,7 @@ impl ServerHandle {
         Self { tx, queue, handle }
     }
 
-    fn received(&mut self) -> Result<Vec<Message>, NotRunningError> {
+    fn received(&mut self) -> Result<Vec<Event>, NotRunningError> {
         if self.running() {
             Ok(self.queue.flush())
         } else {
@@ -184,7 +184,7 @@ impl Drop for ServerHandle {
 struct ServerWorker {
     rx: mpsc::UnboundedReceiver<ServerMessage>,
     port: u16,
-    queue: MessageQueue<Message>,
+    queue: MessageQueue<Event>,
 }
 
 impl ServerWorker {
@@ -208,7 +208,7 @@ impl ServerWorker {
                             let (read_half, write_half) = conn.into_split();
                             listeners.insert(addr, Listener::new(addr, read_half, self.queue.clone(), stop_tx.clone()));
                             writer.add(addr, write_half);
-                            self.queue.push(Message::Connect(addr));
+                            self.queue.push(Event::Connect(addr));
                             println!("Client at address {} connected", addr);
                         },
                         Err(e) => {
@@ -237,7 +237,7 @@ impl ServerWorker {
                 Some(addr) = stop_rx.recv() => {
                     listeners.remove(&addr);
                     writer.remove(addr);
-                    self.queue.push(Message::Disconnect(addr));
+                    self.queue.push(Event::Disconnect(addr));
                 }
             }
         }
@@ -255,7 +255,7 @@ impl Listener {
     fn new(
         addr: SocketAddr,
         reader: OwnedReadHalf,
-        queue: MessageQueue<Message>,
+        queue: MessageQueue<Event>,
         stop_tx: mpsc::UnboundedSender<SocketAddr>,
     ) -> Self {
         let mut worker = ListenerWorker {
@@ -279,7 +279,7 @@ impl Drop for Listener {
 struct ListenerWorker {
     addr: SocketAddr,
     reader: OwnedReadHalf,
-    queue: MessageQueue<Message>,
+    queue: MessageQueue<Event>,
     // Channel to send a stop token to
     stop_tx: mpsc::UnboundedSender<SocketAddr>,
 }
@@ -312,7 +312,7 @@ impl ListenerWorker {
 
             eprintln!("Received {} bytes from {}", n, self.addr);
 
-            self.queue.push(Message::Data(self.addr, buf));
+            self.queue.push(Event::Data(self.addr, buf));
         }
 
         let _ = self.stop_tx.send(self.addr);
