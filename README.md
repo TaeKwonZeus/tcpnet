@@ -1,6 +1,6 @@
 # tcpnet
 
-A simple tick-based TCP message transport for games that runs on Tokio. tcpnet leaves you the ability to process messages and send data to clients at any time with `Server.receive()` and `Server.send()`. The server only uses 1 tokio task per connection, with two more for writing responses and managing the server.
+A simple tick-based TCP message transport for games that runs on Tokio. The client and server provide `send()` and `receive()` methods to send data and poll events respectively.
 
 Server usage example:
 
