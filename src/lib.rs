@@ -4,12 +4,11 @@ pub mod server;
 
 #[cfg(test)]
 pub mod tests {
-    use std::{error::Error, thread::sleep, time::Duration};
-
     use crate::{
         client::{self, Client},
         server::{self, Server},
     };
+    use std::{error::Error, thread::sleep, time::Duration};
 
     #[test]
     fn test() -> Result<(), Box<dyn Error>> {

@@ -13,10 +13,7 @@ use crate::common::{write_data, MessageQueue};
 /*                                   PUBLIC                                   */
 /* -------------------------------------------------------------------------- */
 
-/// This error can indicate three things:
-/// - `start()` hasn't been called on the client;
-/// - `stop()` has been called;
-/// - The server disconnected the client for any reason.
+/// Indicates that the client isn't connected or isn't running.
 #[derive(Debug)]
 pub struct NotConnectedError;
 
@@ -42,7 +39,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Create a new `Client`.
+    /// Creates a new `Client` instance.
     pub fn new() -> Self {
         Self {
             handle: None,
@@ -50,18 +47,18 @@ impl Client {
         }
     }
 
-    /// Start the client.
+    /// Starts the client and connect to the server at `addr`.
     pub fn start(&mut self, addr: &str) {
         let handle = self.rt.block_on(async { ClientHandle::new(addr) });
         self.handle = Some(handle);
     }
 
-    /// Stop the client. The client can be restarted by calling `start()`.
+    /// Stops the client. The client can be restarted by calling `start()`.
     pub fn stop(&mut self) {
         self.handle = None;
     }
 
-    /// Send bytes to the server.
+    /// Sends bytes to the server.
     pub fn send(&self, data: Vec<u8>) -> Result<(), NotConnectedError> {
         if self.connected() {
             self.rt
@@ -72,7 +69,8 @@ impl Client {
         }
     }
 
-    /// Gets the events received from the server since the last `received()` call.
+    /// Gets the events received since the last `received()` call.
+    /// Flushes the internal event buffer.
     pub fn received(&mut self) -> Result<Vec<Event>, NotConnectedError> {
         if self.connected() {
             self.rt
@@ -82,6 +80,7 @@ impl Client {
         }
     }
 
+    /// Indicates whether the client is connected.
     pub fn connected(&self) -> bool {
         match &self.handle {
             Some(h) => self.rt.block_on(async { h.connected() }),

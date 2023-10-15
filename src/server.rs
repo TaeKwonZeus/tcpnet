@@ -22,6 +22,7 @@ use crate::common::{write_data, MessageQueue};
 /*                                   PUBLIC                                   */
 /* -------------------------------------------------------------------------- */
 
+/// Indicates that the server isn't running.
 #[derive(Debug)]
 pub struct NotRunningError;
 
@@ -33,6 +34,7 @@ impl fmt::Display for NotRunningError {
 
 impl Error for NotRunningError {}
 
+/// Represents events received from the server.
 #[derive(Clone)]
 pub enum Event {
     Connect(SocketAddr),
@@ -40,6 +42,7 @@ pub enum Event {
     Data(SocketAddr, Vec<u8>),
 }
 
+/// The server. Run `start()` to start the server, `stop()` to stop it.
 pub struct Server {
     handle: Option<ServerHandle>,
     rt: Runtime,
@@ -47,6 +50,7 @@ pub struct Server {
 
 #[allow(clippy::new_without_default)]
 impl Server {
+    /// Creates a new `Server` instance.
     pub fn new() -> Self {
         Self {
             handle: None,
@@ -54,21 +58,20 @@ impl Server {
         }
     }
 
+    /// Starts the server with a specified `port`.
     pub fn start(&mut self, port: u16) {
         let handle = self.rt.block_on(async { ServerHandle::new(port) });
 
         self.handle = Some(handle);
     }
 
+    /// Stops the server.
     pub fn stop(&mut self) {
-        if !self.running() {
-            return;
-        }
-
-        self.rt.block_on(async { self.handle = None });
+        self.handle = None;
     }
 
-    pub fn disconnect(&mut self, addr: SocketAddr) -> Result<(), Box<dyn Error>> {
+    /// Disconnects (kicks) a client at `addr`.
+    pub fn disconnect(&self, addr: SocketAddr) -> Result<(), Box<dyn Error>> {
         if self.running() {
             self.rt
                 .block_on(async { self.handle.as_ref().unwrap().disconnect(addr) })?;
@@ -78,6 +81,20 @@ impl Server {
         }
     }
 
+    /// Sends bytes to a client at address `addr`.
+    /// Doesn't do anything if specified client is not connected.
+    pub fn send(&self, addr: SocketAddr, data: Vec<u8>) -> Result<(), NotRunningError> {
+        if self.running() {
+            self.rt
+                .block_on(async { self.handle.as_ref().unwrap().send(addr, data) })?;
+            Ok(())
+        } else {
+            Err(NotRunningError)
+        }
+    }
+
+    /// Gets the events received since the last `received()` call.
+    /// Flushes the internal event buffer.
     pub fn received(&mut self) -> Result<Vec<Event>, NotRunningError> {
         if self.running() {
             self.rt
@@ -87,26 +104,10 @@ impl Server {
         }
     }
 
-    pub fn send(&mut self, addr: SocketAddr, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
-        if self.running() {
-            self.rt
-                .block_on(async { self.handle.as_ref().unwrap().send(addr, data) })?;
-            Ok(())
-        } else {
-            Err(Box::new(NotRunningError))
-        }
-    }
-
-    pub fn running(&mut self) -> bool {
+    /// Indicates whether the server is running.
+    pub fn running(&self) -> bool {
         match self.handle.as_ref() {
-            Some(h) => {
-                if self.rt.block_on(async { h.running() }) {
-                    true
-                } else {
-                    self.handle = None;
-                    false
-                }
-            }
+            Some(h) => self.rt.block_on(async { h.running() }),
             None => false,
         }
     }
@@ -151,21 +152,21 @@ impl ServerHandle {
         }
     }
 
-    fn send(&self, addr: SocketAddr, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
+    fn send(&self, addr: SocketAddr, data: Vec<u8>) -> Result<(), NotRunningError> {
         if self.running() {
-            self.tx.send(ServerMessage::Write(addr, data))?;
+            let _ = self.tx.send(ServerMessage::Write(addr, data));
             Ok(())
         } else {
-            Err(Box::new(NotRunningError))
+            Err(NotRunningError)
         }
     }
 
-    fn disconnect(&self, addr: SocketAddr) -> Result<(), Box<dyn Error>> {
+    fn disconnect(&self, addr: SocketAddr) -> Result<(), NotRunningError> {
         if self.running() {
-            self.tx.send(ServerMessage::Disconnect(addr))?;
+            let _ = self.tx.send(ServerMessage::Disconnect(addr));
             Ok(())
         } else {
-            Err(Box::new(NotRunningError))
+            Err(NotRunningError)
         }
     }
 

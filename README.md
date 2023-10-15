@@ -5,38 +5,23 @@ A simple tick-based TCP message transport for games that runs on Tokio. tcpnet l
 Server usage example:
 
 ```rs
-use std::net::SocketAddr;
-use tcpnet::{Server, ServerOpts};
+use tcpnet::server::{Event, Server};
 
-fn on_connect(addr: SocketAddr) {
-    // Handle connections
-    println!("Client at address {} connected", addr);
-}
-
-fn on_disconnect(addr: SocketAddr) {
-    // Handle clients disconnecting
-    println!("Client at address {} disconnected", addr);
-}
-
-#[tokio::main]
-async fn main() {
-    let opts = ServerOpts {
-        addr: "127.0.0.1:7000".to_owned(),
-        on_connect,
-        on_disconnect,
-    };
-
-    // Creates and starts the server in a background task
-    let mut server = Server::new(opts);
+fn main() {
+    let mut server = Server::new();
+    server.start(7000);
     assert!(server.running());
 
-    // Call this on every tick
-    for (addr, data) in server.received() {
-        // Handle incoming requests
-        println!("{}, {:#?}", addr, data);
-
-        // Sending messages to clients
-        server.send((addr, "Hello!".as_bytes().to_vec())).unwrap();
+    // Process events on every tick
+    for event in server.received().unwrap() {
+        match event {
+            Event::Connect(addr) => println!("{} connected", addr),
+            Event::Disconnect(addr) => println!("{} disconnected", addr),
+            Event::Data(addr, data) => {
+                println!("{}: {}", addr, std::str::from_utf8(&data).unwrap());
+                server.send(addr, "Hello back!".as_bytes().to_vec())?;
+            }
+        }
     }
 }
 
@@ -45,37 +30,19 @@ async fn main() {
 Client usage example:
 
 ```rs
-use tcpnet::{Client, ClientOpts};
+use tcpnet::client::{Event, Client};
 
-fn on_connect() {
-    // Executed when connecting to server
-    println!("Connected to server");
-}
+fn main() {
+    let mut client = Client::new();
+    client.start("127.0.0.1:7000");
+    assert!(server.running());
 
-fn on_disconnect() {
-    // Executed when disconnected from server
-    println!("Disconnected from server");
-}
-
-#[tokio::main]
-async fn main() {
-    let opts = ClientOpts {
-        addr: "127.0.0.1:7000".to_owned(),
-        on_connect,
-        on_disconnect,
-    };
-
-    // Creates a client and connects to server
-    let mut client = Client::new(opts);
-
-    // Send messages to server
-    client.send("Hello!".as_bytes().to_vec()).unwrap();
-
-    // Run this in your update loop
-    // Receive messages from server
-    for msg in client.received() {
-        // Process messages
-        println!("Server: {}", std::str::from_utf8(msg.as_slice()).unwrap());
+    // Process events on every tick/frame
+    for event in server.received().unwrap() {
+        match event {
+            Event::Disconnect => println!("Disconnected from server"),
+            Event::Data(data) => println!("Server: {}", addr, std::str::from_utf8(&data).unwrap()),
+        }
     }
 }
 ```
