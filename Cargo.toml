@@ -2,12 +2,11 @@
 name = "tcpnet"
 version = "0.1.0"
 edition = "2021"
-license = "Apache-2.0"
+license = "MIT"
 description = "A simple TCP-based message transport for games that runs on Tokio"
 repository = "https://github.com/TaeKwonZeus/tcpnet"
 categories = ["network-programming"]
 readme = "README.md"
-publish = false
 
 [dependencies]
 tokio = { version = "1.32.0", features = ["full"] }
