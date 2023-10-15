@@ -1,7 +1,7 @@
-use core::fmt;
 use std::{
     collections::HashMap,
     error::Error,
+    fmt,
     io::{self, ErrorKind},
     net::SocketAddr,
 };
@@ -18,9 +18,6 @@ use tokio::{
 
 use crate::common::{write_data, MessageQueue};
 
-type Message = (SocketAddr, Vec<u8>);
-type ServerQueue = MessageQueue<Message>;
-
 #[derive(Debug)]
 pub struct ServerNotStartedError();
 
@@ -31,6 +28,13 @@ impl fmt::Display for ServerNotStartedError {
 }
 
 impl Error for ServerNotStartedError {}
+
+#[derive(Clone)]
+pub enum Message {
+    Connect(SocketAddr),
+    Disconnect(SocketAddr),
+    Data(SocketAddr, Vec<u8>),
+}
 
 pub struct Server {
     handle: Option<ServerHandle>,
@@ -57,9 +61,7 @@ impl Server {
             return;
         }
 
-        self.rt
-            .block_on(async { self.handle.as_ref().unwrap().stop() });
-        self.handle = None;
+        self.rt.block_on(async { self.handle = None });
     }
 
     pub fn disconnect(&mut self, addr: SocketAddr) -> Result<(), Box<dyn Error>> {
@@ -108,7 +110,7 @@ impl Server {
 
 struct ServerHandle {
     tx: mpsc::UnboundedSender<ServerMessage>,
-    queue: ServerQueue,
+    queue: MessageQueue,
     handle: JoinHandle<()>,
 }
 
@@ -118,8 +120,6 @@ impl ServerHandle {
         let queue = MessageQueue::new();
 
         let mut worker = ServerWorker {
-            on_connect: None,
-            on_disconnect: None,
             rx,
             port,
             queue: queue.clone(),
@@ -155,13 +155,15 @@ impl ServerHandle {
         }
     }
 
-    fn stop(&self) {
-        let _ = self.tx.send(ServerMessage::Stop);
-        self.handle.abort();
-    }
-
     fn running(&self) -> bool {
         !self.handle.is_finished()
+    }
+}
+
+impl Drop for ServerHandle {
+    fn drop(&mut self) {
+        self.tx.send(ServerMessage::Stop);
+        self.handle.abort();
     }
 }
 
@@ -172,11 +174,9 @@ enum ServerMessage {
 }
 
 struct ServerWorker {
-    on_connect: Option<fn(SocketAddr)>,
-    on_disconnect: Option<fn(SocketAddr)>,
     rx: mpsc::UnboundedReceiver<ServerMessage>,
     port: u16,
-    queue: ServerQueue,
+    queue: MessageQueue,
 }
 
 impl ServerWorker {
@@ -195,7 +195,7 @@ impl ServerWorker {
                 res = ln.accept() => {
                     match res {
                         Ok((conn, addr)) => {
-                            listeners.insert(addr, Listener::new(addr, conn, self.queue.clone(), writer.clone(), self.on_connect, self.on_disconnect));
+                            listeners.insert(addr, Listener::new(addr, conn, self.queue.clone(), writer.clone()));
                         },
                         Err(e) => {
                             eprintln!("Error encountered while accepting connection: {}", e);
@@ -211,9 +211,7 @@ impl ServerWorker {
                             return;
                         },
                         ServerMessage::Disconnect(addr) => {
-                            if let Some(listener) = listeners.get_mut(&addr) {
-                                listener.stop();
-                            }
+                            listeners.remove(&addr);
                             let _ = writer.send(WriterMessage::RemoveWriter(addr));
                         },
                         ServerMessage::Write(addr, data) => {
@@ -230,69 +228,48 @@ struct Listener {
     addr: SocketAddr,
     handle: JoinHandle<()>,
     writer: Writer,
-    on_drop: Option<fn(SocketAddr)>,
 }
 
 impl Listener {
-    fn new(
-        addr: SocketAddr,
-        conn: TcpStream,
-        queue: ServerQueue,
-        writer: Writer,
-        on_connect: Option<fn(SocketAddr)>,
-        on_disconnect: Option<fn(SocketAddr)>,
-    ) -> Self {
+    fn new(addr: SocketAddr, conn: TcpStream, queue: MessageQueue, writer: Writer) -> Self {
         let (read_half, write_half) = conn.into_split();
         let mut worker = ListenerWorker {
             addr,
             reader: read_half,
-            queue,
+            queue: queue.clone(),
         };
         let w = writer.clone();
         let handle = tokio::spawn(async move {
             let _ = w.send(WriterMessage::AddWriter(addr, write_half));
             println!("Client at address {} connected", addr);
-            if let Some(f) = on_connect {
-                f(addr);
-            }
+            worker.queue.push(Message::Connect(addr));
 
             worker.run().await.unwrap();
 
             let _ = w.send(WriterMessage::RemoveWriter(addr));
             println!("Client at address {} disconnected", addr);
-            if let Some(f) = on_disconnect {
-                f(addr);
-            }
+            worker.queue.push(Message::Disconnect(addr));
         });
 
         Self {
             addr,
             handle,
             writer,
-            on_drop: on_disconnect,
         }
-    }
-
-    fn stop(&mut self) {
-        self.handle.abort()
     }
 }
 
 impl Drop for Listener {
     fn drop(&mut self) {
-        self.stop();
         let _ = self.writer.send(WriterMessage::RemoveWriter(self.addr));
-        println!("Client at address {} disconnected", self.addr);
-        if let Some(f) = self.on_drop {
-            f(self.addr);
-        }
+        self.handle.abort();
     }
 }
 
 struct ListenerWorker {
     addr: SocketAddr,
     reader: OwnedReadHalf,
-    queue: ServerQueue,
+    queue: MessageQueue,
 }
 
 impl ListenerWorker {
@@ -317,7 +294,7 @@ impl ListenerWorker {
 
             eprintln!("Received {} bytes from {}", n, self.addr);
 
-            self.queue.push((self.addr, buf));
+            self.queue.push(Message::Data(self.addr, buf));
         }
     }
 }
@@ -343,8 +320,14 @@ impl Writer {
         Self { tx }
     }
 
-    fn send(&self, msg: WriterMessage) -> Result<(), mpsc::error::SendError<WriterMessage>> {
-        self.tx.send(msg)
+    fn write(&self, addr: SocketAddr, data: Vec<u8>) {
+        self.tx.send(WriterMessage::Write(addr, data));
+    }
+}
+
+impl Drop for Writer {
+    fn drop(&mut self) {
+        self.tx.send(WriterMessage::Stop);
     }
 }
 

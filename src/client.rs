@@ -1,139 +1,221 @@
-use std::{error::Error, io::ErrorKind};
-
+use std::{error::Error, fmt, io::ErrorKind};
 use tokio::{
-    io::{self, AsyncReadExt},
-    net::{tcp::OwnedWriteHalf, TcpStream},
-    sync::mpsc,
+    io::AsyncReadExt,
+    net::TcpStream,
+    runtime::Runtime,
+    sync::{mpsc, oneshot},
     task::JoinHandle,
 };
 
 use crate::common::{write_data, MessageQueue};
 
-#[derive(Clone)]
-pub struct ClientOpts {
-    pub addr: String,
-    pub on_connect: fn(),
-    pub on_disconnect: fn(),
-}
+/* -------------------------------------------------------------------------- */
+/*                                  EXTERNAL                                  */
+/* -------------------------------------------------------------------------- */
 
-impl Default for ClientOpts {
-    fn default() -> Self {
-        Self {
-            addr: "127.0.0.1:7000".to_owned(),
-            on_connect: || {},
-            on_disconnect: || {},
-        }
+/// This error can indicate three things:
+/// - `start()` hasn't been called on the client;
+/// - `stop()` has been called;
+/// - The server disconnected the client for any reason.
+#[derive(Debug)]
+pub struct NotConnectedError;
+
+impl fmt::Display for NotConnectedError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "attempting to call not started client")
     }
 }
 
-type Message = Vec<u8>;
-type ClientQueue = MessageQueue<Message>;
+impl Error for NotConnectedError {}
 
+/// Represents messages received from the client. Notifies the consumer about incoming data or disconnecting.
+#[derive(Clone)]
+pub enum Message {
+    Disconnect,
+    Data(Vec<u8>),
+}
+
+/// The client. Run `start()` to start the client, `stop()` to stop it.
 pub struct Client {
-    opts: ClientOpts,
-    queue: ClientQueue,
-    write_tx: mpsc::UnboundedSender<Message>,
-    handle: JoinHandle<()>,
+    handle: Option<ClientHandle>,
+    rt: Runtime,
 }
 
 impl Client {
-    pub fn new(opts: ClientOpts) -> Self {
-        let (write_tx, write_rx) = mpsc::unbounded_channel();
-        let queue = ClientQueue::new();
-
-        let mut worker = ClientWorker {
-            opts: opts.clone(),
-            queue: queue.clone(),
-        };
-        let on_disconnect = opts.on_disconnect;
-        let handle = tokio::spawn(async move {
-            worker.run(write_rx).await.unwrap();
-            on_disconnect();
-            println!("Disconnected from server");
-        });
-
+    /// Create a new `Client`.
+    pub fn new() -> Self {
         Self {
-            opts,
-            queue,
-            write_tx,
-            handle,
+            handle: None,
+            rt: Runtime::new().unwrap(),
         }
     }
 
-    pub fn received(&mut self) -> Vec<Message> {
-        self.queue.flush()
+    /// Start the client.
+    pub fn start(&mut self, addr: &str) {
+        let handle = self.rt.block_on(async { ClientHandle::new(addr) });
+        self.handle = Some(handle);
     }
 
-    pub fn send(&self, msg: Message) -> Result<(), Box<dyn Error>> {
-        self.write_tx.send(msg)?;
-        Ok(())
+    /// Stop the client. The client can be restarted by calling `start()`.
+    pub fn stop(&mut self) {
+        self.handle = None;
     }
 
-    pub fn opts(&self) -> &ClientOpts {
-        &self.opts
+    /// Send bytes to the server.
+    pub fn send(&self, data: Vec<u8>) -> Result<(), NotConnectedError> {
+        if self.connected() {
+            self.rt
+                .block_on(async { self.handle.as_ref().unwrap().send(data) })?;
+            Ok(())
+        } else {
+            Err(NotConnectedError)
+        }
+    }
+
+    /// Gets the messages received from the server since the last `received()` call.
+    pub fn received(&mut self) -> Result<Vec<Message>, NotConnectedError> {
+        if self.connected() {
+            self.rt
+                .block_on(async { self.handle.as_mut().unwrap().received() })
+        } else {
+            Err(NotConnectedError)
+        }
     }
 
     pub fn connected(&self) -> bool {
+        match &self.handle {
+            Some(h) => h.connected(),
+            None => false,
+        }
+    }
+}
+
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/* -------------------------------------------------------------------------- */
+/*                                  INTERNAL                                  */
+/* -------------------------------------------------------------------------- */
+
+enum ClientMessage {
+    Write(Vec<u8>),
+    Stop,
+}
+
+struct ClientHandle {
+    queue: MessageQueue<Message>,
+    tx: mpsc::UnboundedSender<ClientMessage>,
+    handle: JoinHandle<()>,
+}
+
+impl ClientHandle {
+    fn new(addr: &str) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let queue = MessageQueue::new();
+
+        let mut worker = ClientWorker {
+            queue: queue.clone(),
+            rx,
+        };
+
+        let a = addr.to_owned();
+        let handle = tokio::spawn(async move { worker.run(a).await });
+
+        Self { queue, tx, handle }
+    }
+
+    fn received(&mut self) -> Result<Vec<Message>, NotConnectedError> {
+        if self.connected() {
+            Ok(self.queue.flush())
+        } else {
+            Err(NotConnectedError)
+        }
+    }
+
+    fn send(&self, data: Vec<u8>) -> Result<(), NotConnectedError> {
+        if self.connected() {
+            let _ = self.tx.send(ClientMessage::Write(data));
+            Ok(())
+        } else {
+            Err(NotConnectedError)
+        }
+    }
+
+    fn connected(&self) -> bool {
         !self.handle.is_finished()
     }
 }
 
-struct ClientWorker {
-    opts: ClientOpts,
-    queue: ClientQueue,
-}
-
-impl ClientWorker {
-    async fn run(&mut self, write_rx: mpsc::UnboundedReceiver<Message>) -> io::Result<()> {
-        let (mut read_half, write_half) = TcpStream::connect(&self.opts.addr).await?.into_split();
-        (self.opts.on_connect)();
-        println!("Connected to server at address {}", self.opts.addr);
-
-        let mut writer = WriterWorker {
-            writer: write_half,
-            rx: write_rx,
-        };
-        tokio::spawn(async move { writer.run().await });
-
-        loop {
-            // Get length of message
-            let mut len_buf = [0u8; 4];
-            match read_half.read_exact(len_buf.as_mut_slice()).await {
-                Ok(_) => {}
-                Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(()),
-                Err(e) => return Err(e),
-            }
-            let len = u32::from_le_bytes(len_buf);
-
-            // Get message with the length len
-            let mut buf = vec![0u8; len as usize];
-            let n = match read_half.read_exact(&mut buf).await {
-                Ok(n) => n,
-                Err(e) if e.kind() == ErrorKind::UnexpectedEof => return Ok(()),
-                Err(e) => return Err(e),
-            };
-
-            eprintln!("Received {} bytes from server", n);
-
-            self.queue.push(buf);
-        }
+impl Drop for ClientHandle {
+    fn drop(&mut self) {
+        let _ = self.tx.send(ClientMessage::Stop);
     }
 }
 
-struct WriterWorker {
-    writer: OwnedWriteHalf,
-    rx: mpsc::UnboundedReceiver<Message>,
+struct ClientWorker {
+    queue: MessageQueue<Message>,
+    rx: mpsc::UnboundedReceiver<ClientMessage>,
 }
 
-impl WriterWorker {
-    async fn run(&mut self) -> io::Result<()> {
-        while let Some(mut msg) = self.rx.recv().await {
-            match write_data(&mut self.writer, &mut msg).await {
-                Ok(_) => eprintln!("Wrote {} bytes to server", msg.len()),
-                Err(e) => eprintln!("Error while writing: {}", e),
-            }
-        }
+impl ClientWorker {
+    async fn run(&mut self, addr: String) {
+        let conn = TcpStream::connect(addr).await.unwrap();
+        let (mut read_half, mut write_half) = conn.into_split();
+        println!("Connected to server");
 
-        Ok(())
+        // Start listener, too simple for an actor
+        let mut q = self.queue.clone();
+        let (stop_tx, mut stop_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            loop {
+                // Get length of message
+                let mut len_buf = [0u8; 4];
+                match read_half.read_exact(len_buf.as_mut_slice()).await {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+                    Err(e) => {
+                        eprintln!("Error while reading: {}", e);
+                        break;
+                    }
+                }
+                let len = u32::from_le_bytes(len_buf);
+
+                // Get message with the length len
+                let mut buf = vec![0u8; len as usize];
+                let n = match read_half.read_exact(&mut buf).await {
+                    Ok(n) => n,
+                    Err(e) if e.kind() == ErrorKind::UnexpectedEof => break,
+                    Err(e) => {
+                        eprintln!("Error while reading: {}", e);
+                        break;
+                    }
+                };
+
+                println!("Received {} bytes from server", n);
+
+                q.push(Message::Data(buf));
+            }
+            let _ = stop_tx.send(());
+        });
+
+        loop {
+            let _ = tokio::select! {
+                // Wait for handle completion
+                _ = &mut stop_rx => {
+                    self.queue.push(Message::Disconnect);
+                    println!("Disconnected from server");
+                    return;
+                },
+                Some(msg) = self.rx.recv() => {
+                    match msg {
+                        ClientMessage::Write(mut data) => write_data(&mut write_half, &mut data).await,
+                        ClientMessage::Stop => return
+                    }
+                }
+            };
+        }
     }
 }

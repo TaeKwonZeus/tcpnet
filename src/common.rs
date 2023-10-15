@@ -44,7 +44,7 @@ impl<T> Default for MessageQueue<T> {
     }
 }
 
-pub async fn write_data(writer: &mut OwnedWriteHalf, buf: &mut Vec<u8>) -> io::Result<()> {
+pub async fn write_data(writer: &mut OwnedWriteHalf, buf: &mut [u8]) -> io::Result<()> {
     writer
         .write_all(&u32::to_le_bytes(buf.len() as u32))
         .await?;
