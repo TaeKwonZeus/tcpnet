@@ -10,7 +10,7 @@ use tokio::{
 use crate::common::{write_data, MessageQueue};
 
 /* -------------------------------------------------------------------------- */
-/*                                  EXTERNAL                                  */
+/*                                   PUBLIC                                   */
 /* -------------------------------------------------------------------------- */
 
 /// This error can indicate three things:
@@ -84,7 +84,7 @@ impl Client {
 
     pub fn connected(&self) -> bool {
         match &self.handle {
-            Some(h) => h.connected(),
+            Some(h) => self.rt.block_on(async { h.connected() }),
             None => false,
         }
     }
@@ -97,7 +97,7 @@ impl Default for Client {
 }
 
 /* -------------------------------------------------------------------------- */
-/*                                  INTERNAL                                  */
+/*                                   PRIVATE                                  */
 /* -------------------------------------------------------------------------- */
 
 enum ClientMessage {
@@ -203,7 +203,6 @@ impl ClientWorker {
 
         loop {
             let _ = tokio::select! {
-                // Wait for handle completion
                 _ = &mut stop_rx => {
                     self.queue.push(Message::Disconnect);
                     println!("Disconnected from server");
